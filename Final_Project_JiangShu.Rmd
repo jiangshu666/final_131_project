@@ -1,0 +1,604 @@
+---
+title: "Stroke Prediction Project"
+author: "JiangShu"
+date: "2022-11-30"
+output: 
+  html_document:
+    code_folding: show
+    toc: true
+    toc_float: true
+    theme: journal
+    df_print: paged
+---
+
+```{r setup, include=FALSE,message=FALSE, warning= FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidymodels)
+library(tidyverse)
+library(glmnet)
+library(corrplot)
+library(MASS)
+library(discrim)
+library(ggcorrplot)
+library(janitor)
+library(vembedr)
+library(ranger)
+library(randomForest)
+library(xgboost)
+tidymodels_prefer()
+```
+
+# Introduction
+
+## Background information
+
+When anything prevents blood flow to a portion of the brain or when a blood artery in the brain bursts, a stroke, also known as a brain attack, happens. The brain either ages or suffers harm in both scenarios. A stroke may result in permanent brain damage, chronic disability, or even fatality. The inability to move or feel on one side of the body, difficulties understanding or speaking, dizziness, or loss of vision to one side are all potential signs and symptoms of a stroke.
+
+To learn more about stroke, here's a video introduction defines what is stroke.
+```{r, echo=FALSE}
+embed_url("https://www.youtube.com/watch?v=ryIGnzodxDs&ab_channel=HealthSketch") %>%
+  use_align("center") %>%
+  use_rounded()
+```
+
+Here is another short video talks about what happens during a stroke.
+```{r, echo = FALSE}
+embed_url("https://www.youtube.com/watch?v=-NJm4TJ2it0&ab_channel=TED-Ed") %>%
+  use_align("center") %>%
+  use_rounded()
+```
+
+## Why is our model relevant 
+
+The World Health Organization (WHO) reports that stroke is the second most common cause of death worldwide, accounting for around 11% of all fatalities. Based on input variables like gender, age, different diseases, and smoking status, this dataset is used to build a model that could predict whether a patient is going to suffer from a stroke. Each row of the data contains pertinent patient information. The ability to predict the happening of stroke is very beneficial as we could diminish many pains suffered by patients. 
+
+## Dataset description
+
+This dataset is obtained from Kaggle website, the link is : https://www.kaggle.com/datasets/fedesoriano/stroke-prediction-dataset?resource=download. The author FEDESORIANO uploaded this dataset two years ago; thanks for his work! 
+There are 5110 rows of observation and 10 predictors. The predictor variables are a combination of dummy variables and numerical variables. The outcome variable is stroke. A description of predictors and response variable is as below. 
+- id: unique umber of individual patient  
+- gender: "Male", "Female" or "Other"  
+- age: patient's age  
+- hypertension: 0 if the patient doesn't have hypertension, 1 if the patient has hypertension  
+- heart_disease: 0 if the patient doesn't have any heart diseases, 1 if the patient has a heart disease  
+- ever_married: "No" or "Yes"  
+- work_type: "children", "Govt_jov", "Never_worked", "Private" or "Self-employed"  
+- Residence_type: "Rural" or "Urban"  
+- avg_glucose_level: patient's **average** glucose level in blood  
+- bmi: patient's body mass index  
+- smoking_status: "formerly smoked", "never smoked", "smokes" or "Unknown"  
+- stroke: 1 if the patient had a stroke or 0 if not  
+
+# Exploratory Data Analysis
+
+## load and clean on dataset
+
+```{r}
+df <- read.csv("stroke.csv")
+```
+
+Now we have our data set loaded, let's first check the general information of our variables.
+
+```{r}
+summary(df)
+```
+
+As seen, gender, ever_married, work_type, Residence_type, bmi, smoking_status are character type now.Hypertension and heart_disease are numeric type/ To use them for prediction in the future, I will convert bmi to numerical and all the others to factors. Stroke is now numerical, and I would also convert it to factor to use it in a classification machine learning model. Also, id is just an identifier of individual patient, so it won't be used to predict stroke.
+
+Let's clean the names first
+
+```{r}
+df <- df %>% clean_names()
+```
+
+Now, let's convert types and check missing values.
+
+```{r, warning=FALSE}
+df$gender <- as.factor(df$gender)
+df$ever_married <- as.factor(df$ever_married)
+df$work_type <- as.factor(df$work_type)
+df$residence_type <- as.factor(df$residence_type)
+df$smoking_status <- as.factor(df$smoking_status)
+df$hypertension <- as.factor(df$hypertension)
+df$heart_disease <- as.factor(df$heart_disease)
+df$bmi <- as.numeric(df$bmi)
+df$stroke <- as.factor(df$stroke)
+df$stroke <- factor(df$stroke, levels=c(1,0))
+```
+
+Now, let's check missing values in the columns.
+
+```{r}
+df %>% 
+  summarise_all(~sum(is.na(.)))
+```
+
+As we could see, only bmi has missing values, and there are 201 rows of missing bmi values.
+I'm going to discard those 201 rows since I have 5110 rows, which is fairly large.
+```{r}
+df <- df %>%
+  drop_na(bmi)
+```
+
+Now, all the variables have been converted to desired type and missing values have been dropped.
+
+## Visual plots
+
+Let's first check the outcome variable stroke.
+
+```{r}
+df %>% 
+  ggplot(aes(x = stroke)) +
+  geom_bar(fill= rainbow(2))+
+  labs(title = "Histogram of stroke")
+```
+
+Wow! It seems like the outcome variable is very imbalanced, where there's more 0, patients didn't got stroke. We would want to ensure the split data and fold data generally have similar 1/0 ratio as our original data set, so that the training model we are using won't have extreme values. For instance, if not using stratified sampling, there's some chance that R randomly selects most of the case where people didn't get stroke into training data, which makes the model we generated tends to predict every case to be 0 (won't get stroke).
+
+Next, let's check the distribution of stroke by gender.
+
+```{r}
+ggplot(df, aes(stroke)) +
+  geom_bar() +
+  facet_wrap(~gender, scales = "free_y") +
+  labs(title = "Histogram of stroke by gender")
+```
+
+It seems like the Female and Male have very similar distribution of stroke patients; one more discovery is that only 1 person is reported as Other in the gender column, I would filter out the row containing that example because it's not wise to aggregate our computational burden for this one sample. 
+
+```{r}
+df <- df %>%
+  filter(gender != 'Other')
+```
+
+Now let's check the distribution of stroke by other dummy variables.
+
+```{r}
+ggplot(df, aes(stroke)) +
+  geom_bar() +
+  facet_wrap(~hypertension) +
+  labs(title = "Histogram of stroke by hypertension")
+
+ggplot(df, aes(stroke)) +
+  geom_bar() +
+  facet_wrap(~heart_disease) +
+  labs(title = "Histogram of stroke by heart_disease")
+
+ggplot(df, aes(stroke)) +
+  geom_bar() +
+  facet_wrap(~ever_married) +
+  labs(title = "Histogram of stroke by ever_married")
+
+ggplot(df, aes(stroke)) +
+  geom_bar() +
+  facet_wrap(~work_type) +
+  labs(title = "Histogram of stroke by work_type")
+
+ggplot(df, aes(stroke)) +
+  geom_bar() +
+  facet_wrap(~residence_type) +
+  labs(title = "Histogram of stroke by residence_type")
+
+ggplot(df, aes(stroke)) +
+  geom_bar() +
+  facet_wrap(~smoking_status) +
+  labs(title = "Histogram of stroke by smoking_status")
+
+```
+
+To begin with, have hypertension and heart_disease seems to be a factor that negatively impact the change of getting stroke. However, I rationalize this as the number of people have hypertension/heart_disease is too few. If we look at ratio, they should be affecting outcome variable positively. ever_married seems to affect the possibility of getting stroke but I couldn't rationalize; Children and people never worked before seems barely get stroke. Ha! I think pressure matters and it's important to release stress to prevent from getting stroke. I didn't see huge impact for residence_type and smoking_status.
+
+Now let's check the relationship between continuous variables and outcome variable.
+
+```{r}
+ggplot(df, aes(x=age,y=..density..,fill=stroke)) + 
+  geom_density(alpha=0.25) +
+  labs(title  = "Distribution of stroke by patient's age",fill = "Stroke")+
+  scale_fill_discrete(labels = c("Yes", "No"))
+
+ggplot(df, aes(x=avg_glucose_level,y=..density..,fill=stroke)) + 
+  geom_density(alpha=0.25) +
+  labs(title  = "Distribution of stroke by patient's avg glucose level",fill = "Stroke")+
+  scale_fill_discrete(labels = c("Yes", "No"))
+
+ggplot(df, aes(x=bmi,y=..density..,fill=stroke)) + 
+  geom_density(alpha=0.25) +
+  labs(title  = "Distribution of stroke by patient's bmi",fill = "Stroke")+
+  scale_fill_discrete(labels = c("Yes", "No"))
+```
+
+Looking at graph, it's not hard to tell age is an important variable in determining whether a person would get stroke. Elder people have a much larger chance of getting stroke. For glucose level, it seems like the probability of getting stroke is not affected by it sharply. For body mass index, a larger bmi would lead to larger probability of getting stroke. 
+
+
+Let's look at correlation plot for all variables, including categorical and continuous. I put 
+```{r, warning=FALSE}
+model.matrix(~0+., data= df %>% select(-id,-stroke)) %>% 
+  cor(use="pairwise.complete.obs") %>% 
+  ggcorrplot(show.diag = F, type="lower", lab=TRUE, lab_size=2)
+```
+
+I see a comparatively high correlation between age and ever_marriedYes. This makes sense because generally people will get married when they grown up. 
+
+Finally, let's go through the dataset again and we'll begin our modelling section.
+
+```{r}
+summary(df)
+```
+
+- categorical predictor variable: gender, hypertension, heart_disease, ever_married, work_type, residence_type, smoking_status
+- continuous predictor variable: age, avg_glucose_level, bmi
+- outcome categorical variable: stroke
+
+# Model Building
+
+## Training/Test Set Split
+
+Firstly, split the data set into traning set and test set using stratified sampling and a ratio of 7:3.
+
+```{r}
+set.seed(1112)
+
+stroke_split <- initial_split(df, prop = 0.70,
+                                strata = stroke)
+stroke_train <- training(stroke_split)
+stroke_test <- testing(stroke_split)
+```
+
+- The initial total sample size is 4908. As what most data scientist do with splitting data set in machine learning, the training data set size is set to be 70% of the total sample size, which gives 3435 observations, while the other 30% of total sample data comprises test size and gives 1473 observations.
+
+## Folding training set into K-Fold 
+
+Fold the training set using v-fold cross-validation, with v = 10. Stratify on stroke.
+
+```{r}
+stroke_folds <- vfold_cv(stroke_train, v = 10,strata = stroke)
+```
+
+## Create recipe
+
+```{r}
+stroke_recipe <- recipe(stroke ~ gender + age + hypertension + heart_disease
+                            + ever_married + work_type  + residence_type
+                        + avg_glucose_level + bmi + smoking_status,
+                         data = stroke_train) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_zv(all_predictors()) %>%
+  step_normalize(all_predictors())
+```
+
+Create recipe using stroke as response variable, all the other variables as predictor variables. I exclude id since it's not relevant to our prediction. I dummy all the categorical variable. To ensure the model works, add a step that could remove columns that contain only one value. Finally, normalize all predictors help our model performs better with all the predictors in same scale and range.
+
+## Create workflows for different models
+
+- Logistic Regression
+```{r}
+log_reg <- logistic_reg() %>% 
+  set_engine("glm") %>% 
+  set_mode("classification")
+
+log_wkflow <- workflow() %>% 
+  add_model(log_reg) %>% 
+  add_recipe(stroke_recipe)
+```
+
+- LDA
+```{r}
+
+lda_mod <- discrim_linear() %>% 
+  set_mode("classification") %>% 
+  set_engine("MASS")
+
+lda_wkflow <- workflow() %>% 
+  add_model(lda_mod) %>% 
+  add_recipe(stroke_recipe)
+```
+
+- Lasso/Ridge
+```{r}
+
+net_reg <- multinom_reg(penalty = tune(), mixture = tune()) %>%
+  set_mode("classification") %>%
+  set_engine("glmnet")
+
+net_wkflow <- workflow() %>%
+  add_recipe(stroke_recipe) %>%
+  add_model(net_reg)
+
+two_grid <- grid_regular(penalty(range = c(-5, 5)),
+                         mixture(range = c(0,1)),
+                         levels = c(penalty = 10,mixture = 5))
+```
+
+The parameter tuned is penalty with 10 levels (from 10^(-5 to 5)) and mixture with 5 levels (from 0 to 1). When mixture values equals 0 it means solely Ridge and when it equals 1 it means solely Lasso.With v = 10, I would actually fit 500 models in Lasso/Ridge.
+
+- Decision Tree
+```{r}
+tree_spec <- decision_tree(cost_complexity = tune()) %>%
+  set_engine("rpart") %>%
+  set_mode("classification")
+
+tree_wkflow <- workflow() %>%
+  add_recipe(stroke_recipe) %>%
+  add_model(tree_spec)
+
+tree_grid <- grid_regular(cost_complexity(range = c(-3, -1)),
+                         levels = 10)
+```
+
+The parameter cost_complexity is tuned using a similar range as we did in homework. With v = 10, I would actually fit 100 models in Decision Tree. 
+
+- Random Forest
+```{r}
+
+forest_spec <- rand_forest(mtry = tune(),trees = tune(), min_n = tune()) %>%
+  set_engine("ranger", importance = "impurity") %>%
+  set_mode("classification")
+
+forest_wkflow <- workflow() %>%
+  add_recipe(stroke_recipe) %>%
+  add_model(forest_spec)
+
+forest_grid <- grid_regular(mtry(range = c(1, 10)),
+                            trees(range = c(200,900)),
+                            min_n(range = c(10,20)),
+                            levels = c(mtry = 10,trees = 8,min_n = 8))
+```
+
+Parameters tuned are mtry (from 1-10 variables), trees (# of trees) and min_n (minimum samples for a node to be further split). One thing to note is that mtry is set from 1 to 10 since we have 10 predictor variables in total. With v = 10, I would actually fit 6400 models in Random Forest. 
+
+- Boosted Tree
+```{r}
+
+boost_spec <- boost_tree(trees = tune()) %>%
+  set_engine("xgboost") %>%
+  set_mode("classification")
+
+boost_wkflow <- workflow() %>%
+  add_recipe(stroke_recipe) %>%
+  add_model(boost_spec)
+
+boost_grid <- grid_regular(trees(range = c(1,50)), levels = 20)
+```
+
+Parameter tuned is the number of tress from 1 to 50 for 20 levels. With v = 10, I would actually fit 200 model in Boosted Tree.
+
+## Fit each of the models created to the folded data
+
+Logistic & LDA is fitted in same chunk since both of them take comparatively small time
+```{r, eval=FALSE}
+log_fit <- fit_resamples(log_wkflow, resamples =  stroke_folds, metrics = metric_set(roc_auc))
+lda_fit <- fit_resamples(lda_wkflow, resamples =  stroke_folds, metrics = metric_set(roc_auc))
+```
+
+Lasso/Ridge 
+```{r, eval=FALSE}
+tune_LassoRidge <- tune_grid(
+  net_wkflow,
+  resamples = stroke_folds, 
+  grid = two_grid,
+  metrics = metric_set(roc_auc)
+)
+```
+
+Decision Tree
+```{r, eval=FALSE}
+tune_Decision <- tune_grid(
+  tree_wkflow,
+  resamples = stroke_folds, 
+  grid = tree_grid,
+  metrics = metric_set(roc_auc)
+)
+```
+
+Random Forest
+```{r, eval=FALSE}
+tune_Random <- tune_grid(
+  forest_wkflow,
+  resamples = stroke_folds, 
+  grid = forest_grid,
+  metrics = metric_set(roc_auc)
+)
+```
+
+Boosted Tree
+```{r, eval=FALSE}
+tune_Boosted <- tune_grid(
+  boost_wkflow,
+  resamples = stroke_folds, 
+  grid = boost_grid,
+  metrics = metric_set(roc_auc)
+)
+```
+
+The running time for these models in cross validation set are too long (It took me 1.5 hour to run the random forest one), so I save them in an Rdata file called cv_model. I include the code below for your reference, so I have turned eval to FALSE option.
+```{r, eval=FALSE}
+save(log_fit, lda_fit, tune_LassoRidge,tune_Decision,tune_Random,tune_Boosted,file = "cv_model.Rdata")
+```
+
+## Autoplots for Lasso/Ridge, Decision Tree, Random Forest and Boosted Tree
+
+To visualize the effect of tuning parameters in each method, it's convenient to use autoplot() function to plot.
+First of all, let's load all the models
+```{r}
+load(file = "cv_model.Rdata")
+```
+
+- Lasso/Ridge
+```{r}
+autoplot(tune_LassoRidge)
+```
+
+It seems like smaller mixture value gives better auc value, which also means ridge regularization performs better in our problem. Also, it means all of our predictor variables have a small/medium effect on outcome variable, so it's not appropriate to use Lasso regularization method.
+
+- Decision Tree
+```{r}
+autoplot(tune_Decision)
+```
+
+The auc value decreases rapidly after the cost_complexity value exceeds 0.0046. A single decision tree performs better with a smaller complexity penalty. 
+
+- Random Forest
+```{r}
+autoplot(tune_Random)
+```
+
+Higher mtry leads to lower auc, more trees generally leads to better result, minimal node size of 17 produces better result. By human eye observation, 500 trees, 3 predictors and 14 minimal node size produces the best result.
+
+- Boosted Tree
+```{r}
+autoplot(tune_Boosted)
+```
+
+With increasing number of trees, the model's performance increases rapidly and reach best when the number reaches around 8. Then the performance gradually decrease when the number of trees increases.
+
+
+## Select best model
+
+Select best model in Lasso/Ridge, Decision Tree, Random Forest and Boosted Tree. Compare all the methods, including logistic and lda, and select the best model using roc_auc value
+```{r}
+tree_metrics <- collect_metrics(tune_Decision) %>% 
+  arrange(desc(mean)) %>%
+  head(1) %>% 
+  mutate(method_name = 'pruned tree') %>%
+  select(method_name,.metric,mean)
+forest_metrics <- collect_metrics(tune_Random) %>% 
+  arrange(desc(mean)) %>%
+  head(1) %>% 
+  mutate(method_name = 'random forest')%>%
+  select(method_name,.metric,mean)
+boosted_metrics <- collect_metrics(tune_Boosted) %>% 
+  arrange(desc(mean)) %>%
+  head(1) %>% 
+  mutate(method_name = 'boosted tree')%>%
+  select(method_name,.metric,mean)
+lassoridge_metrics <- collect_metrics(tune_LassoRidge) %>% 
+  arrange(desc(mean)) %>%
+  head(1) %>% 
+  mutate(method_name = 'Lasso/Ridge') %>%
+  select(method_name,.metric,mean)
+log_metrics <- collect_metrics(log_fit) %>% 
+  mutate(method_name = 'logistic regression') %>%
+  select(method_name,.metric,mean)
+lda_metrics <- collect_metrics(lda_fit) %>% 
+  mutate(method_name = 'linear discriminant analysis')%>%
+  select(method_name,.metric,mean)
+six_models <- bind_rows(tree_metrics,forest_metrics,boosted_metrics,lassoridge_metrics,log_metrics,lda_metrics)
+six_models %>%
+  arrange(desc(mean))
+```
+
+Some notes:
+- The best model is logistic regression model. The best roc value achieved is 0.8401739.
+- Generally, random forest would do well. However, in our problem, random forest is only ranked as the 4th best method. I think it's because our data set is too sparse. The number of stroke sample is only 5% of total. Random Forest tree's performance is altered by the sparse data.
+- Regularization will improve model significantly if we have hundreds of features. However, my dataset only has a few feature, so the improvement of Lasso/Ridge is not observed.
+
+## Finalize model
+
+Now we have the best performing model now, let's apply it to the training set and see its performance on test set.
+
+First, let's see our model's AUC value
+```{r}
+log_fit_train <- fit(log_wkflow, stroke_train)
+
+augment(log_fit_train, new_data = stroke_test) %>%
+  roc_auc(truth = stroke, estimate = .pred_1) 
+
+```
+
+The predicting auc value is pretty high: 0.8538782.
+
+Let's check accuracy value.
+```{r}
+augment(log_fit_train, new_data = stroke_test) %>%
+  accuracy(truth = stroke, estimate = .pred_class)
+```
+
+The accuracy is very high, our model manages to predict 95% of test set sample correctly.
+
+Let's check Confusian Matrix
+```{r}
+augment(log_fit_train, new_data = stroke_test) %>%
+  conf_mat(truth = stroke, estimate = .pred_class) %>%
+  autoplot(type = "heatmap")
+```
+
+Now, it's clear that our model basically predicts every training example to be 0, so the accuracy and auc value is rather high. It's fair if we are merely making a model aiming at good accuracy score and auc score. However, we are predicting stroke for people. We don't want to tell everyone you are going to be fine. It's not appropriate to be loose with identifying disease! Indeed, we need a model with a higher recall value. 
+
+Let's fit our 2nd best model in the auc score table, which is Lasso/Ridge.
+```{r}
+best_model <- select_best(tune_LassoRidge)
+class_best_final <- finalize_workflow(net_wkflow, best_model)
+class_best_final_fit <- fit(class_best_final, data = stroke_train)
+```
+
+Now, let's see the AUC value of prediction
+```{r}
+augment(class_best_final_fit, new_data = stroke_test) %>%
+  roc_auc(truth = stroke, estimate = .pred_1)
+```
+
+The auc value of Lasso/Ridge is pretty good with a magnitude of 0.8600811, which is even better than its performance of training set. This shows our model is not overfitting. 
+
+Let's see the accuracy of our prediction
+```{r}
+augment(class_best_final_fit, new_data = stroke_test) %>%
+  accuracy(truth = stroke, estimate = .pred_class)
+```
+
+The accuracy value is pretty high, which means our model manages to predict most of test sample correctly.
+
+
+heat map of the confusion matrix
+```{r}
+augment(class_best_final_fit, new_data = stroke_test) %>%
+  conf_mat(stroke, estimate = .pred_class) %>%
+  autoplot(type = "heatmap")
+```
+
+Again! Lasso/Ridge also predict all the test set sample to be 0. This is not what we want, let's try the next one, lda.
+
+```{r}
+lda_fit_train <- fit(lda_wkflow, stroke_train)
+augment(lda_fit_train, new_data = stroke_test) %>%
+  conf_mat(truth = stroke, estimate = .pred_class) %>%
+  autoplot(type = "heatmap")
+```
+
+Much better this time! Let's check auc value for LDA method. 
+
+```{r}
+augment(lda_fit_train, new_data = stroke_test) %>%
+  roc_auc(truth = stroke, estimate = .pred_1)
+```
+
+Good, still pretty high auc value, and only 0.01 lower than Lasso/Ridge method.
+
+Let's check accuracy value for LDA
+```{r}
+augment(lda_fit_train, new_data = stroke_test) %>%
+  accuracy(truth = stroke, estimate = .pred_class)
+```
+
+Wow, still very high for LDA. Though it's smaller than Lasso/Ridge's accuracy (0.9572301)
+
+Let's see the actual prediction for each sample in the tesing set for LDA.
+```{r}
+prediction_final <- predict(lda_fit_train, new_data = stroke_test, type = "class")
+prediction_final
+```
+
+After checking all the other methods, LDA got the highest recall value. For simplicity, I won't show recall check for all the other methods; therefore, LDA should be the alternative answer to logistic regression in my project result.
+
+# Conclusion
+
+## Outcome
+
+I would say linear discriminant analysis is the best method for predicting stroke in this data set. LDA Has a good accuracy, and the best recall. When we are doing machine learning for public health related topic, we would want to find a model with higher recall value, even if we sacrifice some accuracy or auc value. All in all, we couldn't risk anyone's lives to achieve a better accuracy or auc value. Thus, I feel on balance LDA provides the best overall results. Decision Tree might be the worst model because its lowest auc value. 
+
+## Next Step
+
+The further step or the future plan of this project could be resampling the dataset using downsampling, which could solve the problem imbalanced dataset brings. Also, when selecting best model from cross validation, we could try use recall values to focus more on having higher true positive rate. 
+
+## General Conclusion
+
+The project's goal is to predict whether a patient would get stroke based on their gender, age, hypertension status, heart disease status, marriage status, work type, residence type, average glucose level, bmi and smoking status. This project uses 6 methods taught in class for classification problem. The six methods are: Logistic Regression, Linear Discriminant Analysis, Lasso/Ridge Regularization, Decision Tree, Random Forest and Boosted Tree. After examining carefully, I arrive at the conclusion that Linear Discriminant Analysis is the best method that gives decent accuracy and auc value. More importantly, it manages to achieve the highest recall value. This project not only gives me the opportunity to use tools I learnt in class to solve a machine learning problem, it also makes me realize the importance of recall value when doing machine learning in the field of public health.
