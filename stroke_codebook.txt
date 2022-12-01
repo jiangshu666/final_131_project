@@ -1,3 +1,4 @@
+This dataset contains variables that are used to predict whether a patient would get stroke.
 A description of predictors and response variable is as bellow.
 
 - id: unique umber of individual patient  
