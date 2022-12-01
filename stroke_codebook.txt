@@ -1,0 +1,14 @@
+A description of predictors and response variable is as bellow.
+
+- id: unique umber of individual patient  
+- gender: "Male", "Female" or "Other"  
+- age: patient's age  
+- hypertension: 0 if the patient doesn't have hypertension, 1 if the patient has hypertension  
+- heart_disease: 0 if the patient doesn't have any heart diseases, 1 if the patient has a heart disease 
+- ever_married: "No" or "Yes"  
+- work_type: "children", "Govt_jov", "Never_worked", "Private" or "Self-employed"  
+- Residence_type: "Rural" or "Urban"  
+- avg_glucose_level: patient's **average** glucose level in blood  
+- bmi: patient's body mass index  
+- smoking_status: "formerly smoked", "never smoked", "smokes" or "Unknown"  
+- stroke: 1 if the patient had a stroke or 0 if not  
